@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import asyncio
 from pymongo import MongoClient
 import bson
+import json
 from pymongo.errors import DuplicateKeyError
 from pymongo.synchronous.collection import Collection
 from transformers import DistilBertTokenizer, DistilBertModel
@@ -14,11 +15,12 @@ from spacy.matcher import PhraseMatcher
 import uvicorn
 import os
 
-from entities import Skill, GetSubjectNameEmbedding
+from entities import Skill, GetSubjectNameEmbedding, GetRecommendations
 from scripts.pdf import get_text_from_pdf_stream
 from scripts.ner import extract_skills_from_text
 from scripts.transformers import create_embedding
 from scripts.file import get_sha256_hash
+from scripts.similarity import cosine_similarity
 
 
 # DistilBERT / Transformer
@@ -127,6 +129,81 @@ async def root():
     return { "message": "Ping Pong!" }
 
 
+@app.post("/get_recommendations")
+async def get_recommendations(body: GetRecommendations,
+                              model: DistilBertModel = Depends(get_model),
+                              tokenizer: DistilBertTokenizer = Depends(get_tokenizer),
+                              subjects_collection: Collection = Depends(get_subjects_collection),
+                              users_collection: Collection = Depends(get_users_collection),
+                              skills_collection: Collection = Depends(get_skills_collection)):
+    
+    if not is_valid_object_id(body.id):
+        raise HTTPException(status_code=400, detail="Input ID is not a valid ObjectId")
+
+    id = bson.objectid.ObjectId(body.id)
+    user = users_collection.find_one({ "_id": id })
+
+    if user is None:
+        raise HTTPException(status_code=404, detail="User Not Found")
+
+    all_subjects = subjects_collection.find({}, { "name": 1, "embedding": 1 })
+
+    # populate skill references
+    populated_skills = []
+    for skill_id in user["skills"]:
+        skill = skills_collection.find_one({ "_id": skill_id })
+        populated_skills.append(skill)
+
+    user["skills"] = populated_skills
+
+    # similarity search
+    similar = []
+    user_skills = " ".join(skill["name"] for skill in user["skills"])
+    user_skills_embedding = create_embedding(user_skills, model, tokenizer)
+
+    for subject in all_subjects:
+        # for backwards-compatibility, calculate embedding of the subject name 
+        # if the subject does not yet have an embedding associated to it
+        if "embedding" not in subject:
+            subject_name_embedding = create_embedding(subject["name"], model, tokenizer)
+            subjects_collection.update_one(
+                    { 
+                        "_id": subject["_id"]
+                    },
+                    { 
+                        "$set": { 
+                            "embedding": subject_name_embedding
+                        }
+                    }
+            )
+
+            # refetch on embedding re-calculation
+            subject = subjects_collection.find_one({ "_id": subject["_id"] }, { "name": 1, "embedding": 1 })
+
+        if subject is None:
+            raise HTTPException(status_code=500, detail="Failed to refetch Subject during embedding re-calculation")
+        
+        similarity = cosine_similarity(user_skills_embedding, subject["embedding"])
+
+        # convert ObjectId to string
+        subject["_id"] = str(subject["_id"])
+
+        # remove embedding and allocations after processing
+        subject.pop("embedding", None)
+
+        similar.append({ 
+                "token": subject["name"], 
+                "similarity": similarity,
+                "subject": subject
+        })
+
+    similar = sorted(similar, key=lambda x: x["similarity"], reverse=True)[:5]
+    
+    return {
+        "results": similar
+    }
+
+
 @app.post("/get_subject_name_embedding")
 async def get_subject_name_embedding(body: GetSubjectNameEmbedding,
                                      model: DistilBertModel = Depends(get_model),
@@ -134,12 +211,12 @@ async def get_subject_name_embedding(body: GetSubjectNameEmbedding,
                                      subjects_collection: Collection = Depends(get_subjects_collection)):
 
     if not is_valid_object_id(body.id):
-        raise HTTPException(status_code=400, detail="Invalid ObjectId parameter")
+        raise HTTPException(status_code=400, detail="Input ID is not a valid ObjectId")
 
     id = bson.objectid.ObjectId(body.id)
     subject = subjects_collection.find_one({ "_id": id })
 
-    if not subject:
+    if subject is None:
         raise HTTPException(status_code=404, detail="Subject Not Found")
 
     embedding = create_embedding(subject["name"], model, tokenizer)
@@ -178,7 +255,7 @@ async def analyze_resume(file: UploadFile = File(...),
         raise HTTPException(status_code=400, detail="Invalid File Type")
 
     if not is_valid_object_id(teacher_id):
-        raise HTTPException(status_code=400, detail="Invalid ObjectId parameter")
+        raise HTTPException(status_code=400, detail="Input ID is not a valid ObjectId")
 
     user_id = bson.objectid.ObjectId(teacher_id)
     user = users_collection.find_one({ "_id": user_id })

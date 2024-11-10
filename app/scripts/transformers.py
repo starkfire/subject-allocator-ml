@@ -1,9 +1,8 @@
 from transformers import DistilBertModel, DistilBertTokenizer
 import torch
-from typing import List
 
 
-def create_embedding(word: str | List[str],
+def create_embedding(word: str,
                      model: DistilBertModel,
                      tokenizer: DistilBertTokenizer):
 

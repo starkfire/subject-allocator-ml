@@ -4,9 +4,9 @@ from contextlib import asynccontextmanager
 import asyncio
 from pymongo import MongoClient
 import bson
-import json
 from pymongo.errors import DuplicateKeyError
 from pymongo.synchronous.collection import Collection
+from cachetools import TTLCache
 from transformers import DistilBertTokenizer, DistilBertModel
 from skillNer.general_params import SKILL_DB
 from skillNer.skill_extractor_class import SkillExtractor
@@ -36,6 +36,9 @@ mongo_client = None
 users_collection = None
 skills_collection = None
 subjects_collection = None
+
+# Cache
+cache = TTLCache(maxsize=100, ttl=120)
 
 
 def is_valid_object_id(id: str) -> bool:
@@ -105,6 +108,10 @@ async def get_subjects_collection():
     return subjects_collection
 
 
+async def get_cache():
+    return cache
+
+
 def shutdown_mongodb_client():
     if mongo_client is not None:
         mongo_client.close()
@@ -131,6 +138,7 @@ async def root():
 
 @app.post("/get_recommendations")
 async def get_recommendations(body: GetRecommendations,
+                              cache: TTLCache = Depends(get_cache),
                               model: DistilBertModel = Depends(get_model),
                               tokenizer: DistilBertTokenizer = Depends(get_tokenizer),
                               subjects_collection: Collection = Depends(get_subjects_collection),
@@ -146,6 +154,24 @@ async def get_recommendations(body: GetRecommendations,
     if user is None:
         raise HTTPException(status_code=404, detail="User Not Found")
 
+    # skip if user has no associated skill words
+    if len(user["skills"]) == 0:
+        return { "results": [] }
+
+    # check for cache entries
+    cache_key = ""
+    resume_hash = ""
+
+    if "resume" in user and "hash" in user["resume"] and user["resume"]["hash"]:
+        if len(user["resume"]["hash"] > 0):
+            resume_hash = user["resume"]["hash"]
+
+        cache_key = body.id + user["resume"]["hash"] if len(resume_hash) > 0 else body.id
+
+        if len(cache_key) > 0 and cache_key in cache:
+            return { "results": cache[cache_key] }
+
+    # retrieve all subjects and their embeddings
     all_subjects = subjects_collection.find({}, { "name": 1, "embedding": 1 })
 
     # populate skill references
@@ -198,6 +224,10 @@ async def get_recommendations(body: GetRecommendations,
         })
 
     similar = sorted(similar, key=lambda x: x["similarity"], reverse=True)[:5]
+
+    # store results in cache
+    if len(cache_key) > 0:
+        cache[cache_key] = similar
     
     return {
         "results": similar
@@ -248,7 +278,6 @@ async def analyze_resume(file: UploadFile = File(...),
 
     VALID_MIMETYPES = [
         "application/pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ]
 
     if file.content_type not in VALID_MIMETYPES:

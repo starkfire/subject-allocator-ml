@@ -1,4 +1,5 @@
 from fastapi import FastAPI, BackgroundTasks, Form, HTTPException, File, UploadFile, Depends
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import asyncio
 from pymongo import MongoClient
@@ -17,6 +18,7 @@ from entities.Skill import Skill
 from scripts.pdf import get_text_from_pdf_stream
 from scripts.ner import extract_skills_from_text
 from scripts.transformers import create_embedding
+from scripts.file import get_sha256_hash
 
 
 # DistilBERT / Transformer
@@ -142,10 +144,31 @@ async def analyze_resume(
     if not user:
         raise HTTPException(status_code=404, detail="User Not Found")
 
+    # retrieve the hash of the file for caching purposes
+    file_hash = await get_sha256_hash(file)
+
+    # skip if this is the same file that has been tracked before
+    if "resume" in user and "hash" in user["resume"]:
+        if user["resume"]["hash"] == file_hash:
+            return JSONResponse(status_code=304, content={})
+
+    # named entity recognition
     text = get_text_from_pdf_stream(file)
+
+    if text is None:
+        raise HTTPException(status_code=400, detail="Empty File")
+
+    if len(text) == 0:
+        raise HTTPException(status_code=400, detail="File has no text")
+
     skills = extract_skills_from_text(skill_extractor, text)
+
+    if len(skills) == 0:
+        raise HTTPException(status_code=400, detail="No skill words found")
+
     skill_ids = []
 
+    # create vector/embedding for each detected skill word
     for skill in skills:
         try:
             skill_exists = skills_collection.find_one({ "name": skill })
@@ -154,13 +177,27 @@ async def analyze_resume(
                 continue
 
             embedding = create_embedding(skill, model, tokenizer)
+
+            # store skill in database, along with its associated vector/embedding
             skill = Skill(name=skill, embedding=embedding)
             skill_record = skills_collection.insert_one(skill.model_dump())
             skill_ids.append(skill_record.inserted_id)
         except DuplicateKeyError:
             continue
-
-    users_collection.update_one({ "_id": user_id }, { "$set": { "skills": skill_ids } })
+    
+    # update user
+    users_collection.update_one(
+            { 
+                "_id": user_id 
+            }, 
+            { 
+                "$set": { 
+                    "skills": skill_ids,
+                    "resume.url": "",
+                    "resume.hash": file_hash
+                }
+            }
+    )
 
     return {
         "skills": skills

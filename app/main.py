@@ -12,15 +12,14 @@ from skillNer.general_params import SKILL_DB
 from skillNer.skill_extractor_class import SkillExtractor
 import spacy
 from spacy.matcher import PhraseMatcher
-import uvicorn
 import os
 
-from entities import Skill, GetSubjectNameEmbedding, GetRecommendations
-from scripts.pdf import get_text_from_pdf_stream
-from scripts.ner import extract_skills_from_text
-from scripts.transformers import create_embedding
-from scripts.file import get_sha256_hash
-from scripts.similarity import cosine_similarity
+from .entities import Skill, GetSubjectNameEmbedding, GetRecommendations
+from .scripts.pdf import get_text_from_pdf_stream
+from .scripts.ner import extract_skills_from_text
+from .scripts.transformers import create_embedding
+from .scripts.file import get_sha256_hash
+from .scripts.similarity import cosine_similarity
 
 
 # DistilBERT / Transformer
@@ -85,6 +84,9 @@ async def connect_to_mongodb():
     users_collection = mongo_client["subject-allocator"]["users"]
     skills_collection = mongo_client["subject-allocator"]["skills"]
     subjects_collection = mongo_client["subject-allocator"]["subjects"]
+
+    if mongo_client is not None:
+        print("[*] Connected to MongoDB at {}".format(str(os.getenv("MONGODB_URI"))))
 
 
 async def get_users_collection():
@@ -351,6 +353,3 @@ async def analyze_resume(file: UploadFile = File(...),
         "skills": skills
     }
 
-
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

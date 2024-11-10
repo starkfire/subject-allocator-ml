@@ -14,7 +14,7 @@ from spacy.matcher import PhraseMatcher
 import uvicorn
 import os
 
-from entities.Skill import Skill
+from entities import Skill, GetSubjectNameEmbedding
 from scripts.pdf import get_text_from_pdf_stream
 from scripts.ner import extract_skills_from_text
 from scripts.transformers import create_embedding
@@ -33,6 +33,7 @@ skill_extractor = None
 mongo_client = None
 users_collection = None
 skills_collection = None
+subjects_collection = None
 
 
 def is_valid_object_id(id: str) -> bool:
@@ -73,10 +74,12 @@ async def get_tokenizer():
 
 
 async def connect_to_mongodb():
-    global mongo_client, users_collection, skills_collection
+    global mongo_client
+    global users_collection, skills_collection, subjects_collection
     mongo_client = MongoClient(os.getenv("MONGODB_URI"))
     users_collection = mongo_client["subject-allocator"]["users"]
     skills_collection = mongo_client["subject-allocator"]["skills"]
+    subjects_collection = mongo_client["subject-allocator"]["subjects"]
 
 
 async def get_users_collection():
@@ -91,6 +94,13 @@ async def get_skills_collection():
         await asyncio.sleep(0.1)
 
     return skills_collection
+
+
+async def get_subjects_collection():
+    while subjects_collection is None:
+        await asyncio.sleep(0.1)
+
+    return subjects_collection
 
 
 def shutdown_mongodb_client():
@@ -117,15 +127,47 @@ async def root():
     return { "message": "Ping Pong!" }
 
 
+@app.post("/get_subject_name_embedding")
+async def get_subject_name_embedding(body: GetSubjectNameEmbedding,
+                                     model: DistilBertModel = Depends(get_model),
+                                     tokenizer: DistilBertTokenizer = Depends(get_tokenizer),
+                                     subjects_collection: Collection = Depends(get_subjects_collection)):
+
+    if not is_valid_object_id(body.id):
+        raise HTTPException(status_code=400, detail="Invalid ObjectId parameter")
+
+    id = bson.objectid.ObjectId(body.id)
+    subject = subjects_collection.find_one({ "_id": id })
+
+    if not subject:
+        raise HTTPException(status_code=404, detail="Subject Not Found")
+
+    embedding = create_embedding(subject["name"], model, tokenizer)
+
+    subjects_collection.update_one(
+                {
+                    "_id": id
+                },
+                {
+                    "$set": {
+                        "embedding": embedding
+                    }
+                }
+    )
+
+    return {
+        "message": "Done."
+    }
+
+
 @app.post("/analyze_resume")
-async def analyze_resume(
-        file: UploadFile = File(...),
-        teacher_id: str = Form(...),
-        skill_extractor: SkillExtractor = Depends(get_nlp_model),
-        model: DistilBertModel = Depends(get_model),
-        tokenizer: DistilBertTokenizer = Depends(get_tokenizer),
-        skills_collection: Collection = Depends(get_skills_collection),
-        users_collection: Collection = Depends(get_users_collection)):
+async def analyze_resume(file: UploadFile = File(...),
+                        teacher_id: str = Form(...),
+                        skill_extractor: SkillExtractor = Depends(get_nlp_model),
+                        model: DistilBertModel = Depends(get_model),
+                        tokenizer: DistilBertTokenizer = Depends(get_tokenizer),
+                        skills_collection: Collection = Depends(get_skills_collection),
+                        users_collection: Collection = Depends(get_users_collection)):
 
     VALID_MIMETYPES = [
         "application/pdf",

@@ -1,0 +1,10 @@
+services:
+  subject_allocator_ml:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: subject_allocator_ml_container
+    ports:
+      - "8000:80"
+    volumes:
+      - .:/app

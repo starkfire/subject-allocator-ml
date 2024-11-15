@@ -1,5 +1,6 @@
 from fastapi import FastAPI, BackgroundTasks, Form, HTTPException, File, UploadFile, Depends
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import asyncio
 from pymongo import MongoClient
@@ -131,6 +132,20 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+# cross-origin resource sharing
+origins = ["http://localhost", "http://localhost:8080"]
+API_URL = os.getenv("API_URL") if "API_URL" in os.environ else None
+
+if API_URL is not None:
+    origins.append(API_URL)
+
+app.add_middleware(CORSMiddleware,
+                   allow_origins=origins,
+                   allow_credentials=True,
+                   allow_methods=["*"],
+                   allow_headers=["*"])
 
 
 @app.get("/")

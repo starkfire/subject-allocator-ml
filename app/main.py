@@ -248,6 +248,18 @@ async def get_recommendations(body: GetRecommendations,
 
     similar = sorted(similar, key=lambda x: x["similarity"], reverse=True)[:5]
 
+    # update user's recommendations
+    users_collection.update_one(
+            {
+                "_id": id
+            },
+            {
+                "$set": {
+                    "recommendations": [bson.objectid.ObjectId(x["subject"]["_id"]) for x in similar]
+                }
+            }
+    )
+
     # store results in cache
     if len(cache_key) > 0:
         cache[cache_key] = similar

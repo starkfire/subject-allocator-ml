@@ -180,7 +180,7 @@ async def get_recommendations(body: GetRecommendations,
     resume_hash = ""
 
     if "resume" in user and "hash" in user["resume"] and user["resume"]["hash"]:
-        if len(user["resume"]["hash"] > 0):
+        if len(user["resume"]["hash"]) > 0:
             resume_hash = user["resume"]["hash"]
 
         cache_key = body.id + user["resume"]["hash"] if len(resume_hash) > 0 else body.id

@@ -40,6 +40,9 @@ subjects_collection = None
 # Cache
 cache = TTLCache(maxsize=100, ttl=120)
 
+# HuggingFace
+os.environ['SENTENCE_TRANSFORMERS_HOME'] = './.cache'
+
 
 def is_valid_object_id(id: str) -> bool:
     return bson.objectid.ObjectId.is_valid(id)
@@ -207,7 +210,7 @@ async def get_recommendations(body: GetRecommendations,
     for subject in all_subjects:
         # for backwards-compatibility, calculate embedding of the subject name 
         # if the subject does not yet have an embedding associated to it
-        if "embedding" not in subject:
+        if "embedding" not in subject or len(subject["embedding"]) != 768:
             subject_name_embedding = create_embedding(subject["name"], model, tokenizer)
             subjects_collection.update_one(
                     { 
@@ -225,6 +228,9 @@ async def get_recommendations(body: GetRecommendations,
 
         if subject is None:
             raise HTTPException(status_code=500, detail="Failed to refetch Subject during embedding re-calculation")
+
+        if len(subject["embedding"]) != 768:
+            raise HTTPException(status_code=500, detail="Vector embedding has invalid shape")
         
         similarity = cosine_similarity(user_skills_embedding, subject["embedding"])
 

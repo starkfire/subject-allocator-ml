@@ -192,7 +192,10 @@ async def get_recommendations(body: GetRecommendations,
             return { "results": cache[cache_key] }
 
     # retrieve all subjects and their embeddings
-    all_subjects = subjects_collection.find({}, { "name": 1, "embedding": 1 })
+    all_subjects = subjects_collection.find(
+            { "options.exclude_from.recommendations": False }, 
+            { "name": 1, "embedding": 1 }
+    )
 
     # populate skill references
     populated_skills = []

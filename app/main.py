@@ -138,7 +138,7 @@ app = FastAPI(lifespan=lifespan)
 
 
 # cross-origin resource sharing
-origins = ["http://localhost", "http://localhost:8080"]
+origins = ["http://localhost", "http://localhost:8080", "http://localhost:5173"]
 API_URL = os.getenv("API_URL") if "API_URL" in os.environ else None
 
 if API_URL is not None:
@@ -182,19 +182,24 @@ async def get_recommendations(body: GetRecommendations,
     cache_key = ""
     resume_hash = ""
 
-    if "resume" in user and "hash" in user["resume"] and user["resume"]["hash"]:
-        if len(user["resume"]["hash"]) > 0:
-            resume_hash = user["resume"]["hash"]
+    if body.no_cache is None or body.no_cache is False:
+        if "resume" in user and "hash" in user["resume"] and user["resume"]["hash"]:
+            if len(user["resume"]["hash"]) > 0:
+                resume_hash = user["resume"]["hash"]
 
-        cache_key = body.id + user["resume"]["hash"] if len(resume_hash) > 0 else body.id
+            cache_key = body.id + user["resume"]["hash"] if len(resume_hash) > 0 else body.id
 
-        if len(cache_key) > 0 and cache_key in cache:
-            return { "results": cache[cache_key] }
+            if len(cache_key) > 0 and cache_key in cache:
+                return { "results": cache[cache_key] }
 
     # retrieve all subjects and their embeddings
     all_subjects = subjects_collection.find(
-            { "options.exclude_from.recommendations": False }, 
-            { "name": 1, "embedding": 1 }
+                { 
+                    "options.exclude_from.recommendations": { 
+                        "$not": { "$eq": True }
+                    },
+                }, 
+                { "name": 1, "embedding": 1 }
     )
 
     # populate skill references
@@ -334,9 +339,11 @@ async def analyze_resume(file: UploadFile = File(...),
     file_hash = await get_sha256_hash(file)
 
     # skip if this is the same file that has been tracked before
+    """
     if "resume" in user and "hash" in user["resume"]:
         if user["resume"]["hash"] == file_hash:
             return JSONResponse(status_code=304, content={})
+    """
 
     # named entity recognition
     text = get_text_from_pdf_stream(file)
@@ -360,6 +367,7 @@ async def analyze_resume(file: UploadFile = File(...),
             skill_exists = skills_collection.find_one({ "name": skill })
 
             if skill_exists:
+                skill_ids.append(skill_exists["_id"])
                 continue
 
             embedding = create_embedding(skill, model, tokenizer)
